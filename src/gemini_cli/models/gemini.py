@@ -44,12 +44,13 @@ def list_available_models(api_key):
 class GeminiModel:
     """Interface for Gemini models using native function calling agentic loop."""
 
-    def __init__(self, api_key: str, console: Console, model_name: str ="gemini-2.5-pro-exp-03-25"):
+    def __init__(self, api_key: str, console: Console, model_name: str ="gemini-2.5-pro-exp-03-25", context_content: str = None):
         """Initialize the Gemini model interface."""
         self.api_key = api_key
         self.initial_model_name = model_name
         self.current_model_name = model_name
         self.console = console
+        self.context_content = context_content
         genai.configure(api_key=api_key)
 
         self.generation_config = genai.types.GenerationConfig(temperature=0.4, top_p=0.95, top_k=40)
@@ -104,10 +105,10 @@ class GeminiModel:
         original_user_prompt = prompt
         if prompt.startswith('/'):
              command = prompt.split()[0].lower()
-             # Handle commands like /compact here eventually
-             if command in ['/exit', '/help']:
+             # Handle special commands
+             if command in ['/exit', '/help', '/init']:
                  logging.info(f"Handled command: {command}")
-                 return None # Or return specific help text
+                 return None # Return None to let main.py handle these commands
 
         # === Step 1: Mandatory Orientation ===
         orientation_context = ""
@@ -488,8 +489,8 @@ class GeminiModel:
 
         tool_list_str = "\n".join(tool_descriptions)
 
-        # Prompt v13.1 - Native Functions, Planning, Accurate Context
-        return f"""You are Gemini Code, an AI coding assistant running in a CLI environment.
+        # Base prompt
+        base_prompt = f"""You are Gemini Code, an AI coding assistant running in a CLI environment.
 Your goal is to help the user with their coding tasks by understanding their request, planning the necessary steps, and using the available tools via **native function calls**.
 
 Available Tools (Use ONLY these via function calls):
@@ -523,6 +524,52 @@ Important Rules:
     *   If code was generated or modified, the summary **MUST** contain the **actual, specific commands** needed to run or test the result (e.g., show `pip install Flask` and `python app.py`, not just say "instructions provided"). Use Markdown code blocks for commands.
 
 The user's first message will contain initial directory context and their request."""
+
+        # Add context file content if available
+        if self.context_content:
+            base_prompt = f"""You are Gemini Code, an AI coding assistant running in a CLI environment.
+Your goal is to help the user with their coding tasks by understanding their request, planning the necessary steps, and using the available tools via **native function calls**.
+
+# PROJECT CONTEXT
+The following is contextual information about the project you're working with:
+
+{self.context_content}
+
+Use the information above to better understand the codebase structure, dependencies, key files, and important components.
+
+Available Tools (Use ONLY these via function calls):
+{tool_list_str}
+
+Workflow:
+1.  **Analyze & Plan:** Understand the user's request based on the provided directory context (`ls` output) and the request itself. For non-trivial tasks, **first outline a brief plan** of the steps and tools you will use in a text response. **Note:** Actions that modify files (`edit`, `create_file`) will require user confirmation before execution.
+2.  **Execute:** If a plan is not needed or after outlining the plan, make the **first necessary function call** to execute the next step (e.g., `view` a file, `edit` a file, `grep` for text, `tree` for structure).
+3.  **Observe:** You will receive the result of the function call (or a message indicating user rejection). Use this result to inform your next step.
+4.  **Repeat:** Based on the result, make the next function call required to achieve the user's goal. Continue calling functions sequentially until the task is complete.
+5.  **Complete:** Once the *entire* task is finished, **you MUST call the `task_complete` function**, providing a concise summary of what was done in the `summary` argument. 
+    *   The `summary` argument MUST accurately reflect the final outcome (success, partial success, error, or what was done).
+    *   Format the summary using **Markdown** for readability (e.g., use backticks for filenames `like_this.py` or commands `like this`).
+    *   If code was generated or modified, the summary **MUST** contain the **actual, specific commands** needed to run or test the result (e.g., show `pip install Flask` and `python app.py`, not just say "instructions provided"). Use Markdown code blocks for commands.
+
+Important Rules:
+*   **Use Native Functions:** ONLY interact with tools by making function calls as defined above. Do NOT output tool calls as text (e.g., `cli_tools.ls(...)`).
+*   **Sequential Calls:** Call functions one at a time. You will get the result back before deciding the next step. Do not try to chain calls in one turn.
+*   **Initial Context Handling:** When the user asks a general question about the codebase contents (e.g., "what's in this directory?", "show me the files", "whats in this codebase?"), your **first** response MUST be a summary or list of **ALL** files and directories provided in the initial context (`ls` or `tree` output). Do **NOT** filter this initial list or make assumptions (e.g., about virtual environments). Only after presenting the full initial context should you suggest further actions or use other tools if necessary.
+*   **Accurate Context Reporting:** When asked about directory contents (like "whats in this codebase?"), accurately list or summarize **all** relevant files and directories shown in the `ls` or `tree` output, including common web files (`.html`, `.js`, `.css`), documentation (`.md`), configuration files, build artifacts, etc., not just specific source code types. Do not ignore files just because virtual environments are also present. Use `tree` for a hierarchical view if needed.
+*   **Handling Explanations:** 
+    *   If the user asks *how* to do something, asks for an explanation, or requests instructions (like "how do I run this?"), **provide the explanation or instructions directly in a text response** using clear Markdown formatting.
+    *   **Proactive Assistance:** When providing instructions that culminate in a specific execution command (like `python file.py`, `npm start`, `git status | cat`, etc.), first give the full explanation, then **explicitly ask the user if they want you to run that final command** using the `execute_command` tool. 
+        *   Example: After explaining how to run `calculator.py`, you should ask: "Would you like me to run `python calculator.py | cat` for you using the `execute_command` tool?" (Append `| cat` for commands that might page).
+    *   Do *not* use `task_complete` just for providing information; only use it when the *underlying task* (e.g., file creation, modification) is fully finished.
+*   **Planning First:** For tasks requiring multiple steps (e.g., read file, modify content, write file), explain your plan briefly in text *before* the first function call.
+*   **Precise Edits:** When editing files (`edit` tool), prefer viewing the relevant section first (`view` tool with offset/limit), then use exact `old_string`/`new_string` arguments if possible. Only use the `content` argument for creating new files or complete overwrites.
+*   **Task Completion Signal:** ALWAYS finish action-oriented tasks by calling `task_complete(summary=...)`. 
+    *   The `summary` argument MUST accurately reflect the final outcome (success, partial success, error, or what was done).
+    *   Format the summary using **Markdown** for readability (e.g., use backticks for filenames `like_this.py` or commands `like this`).
+    *   If code was generated or modified, the summary **MUST** contain the **actual, specific commands** needed to run or test the result (e.g., show `pip install Flask` and `python app.py`, not just say "instructions provided"). Use Markdown code blocks for commands.
+
+The user's first message will contain initial directory context and their request."""
+            
+        return base_prompt
 
     # --- Text Extraction Helper (if needed for final output) ---
     def _extract_text_from_response(self, response) -> str | None:

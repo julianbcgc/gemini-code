@@ -6,8 +6,10 @@ src/gemini_cli/main.py
 src/gemini_cli/utils.py
 src/gemini_cli/models/__init__.py
 src/gemini_cli/models/gemini.py
+src/gemini_cli/models/vertex.py
 src/gemini_cli/tools/__init__.py
 src/gemini_cli/tools/base.py
+src/gemini_cli/tools/code_analyzer.py
 src/gemini_cli/tools/directory_tools.py
 src/gemini_cli/tools/file_tools.py
 src/gemini_cli/tools/quality_tools.py

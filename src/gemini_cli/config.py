@@ -23,6 +23,11 @@ class Config:
             default_config = {
                 "api_keys": {},
                 "default_model": "models/gemini-2.5-pro-exp-03-25",
+                "provider": "google",  # Options: "google" or "vertex"
+                "vertex": {
+                    "project_id": "",
+                    "location": "us-central1",
+                },
                 "settings": {
                     "max_tokens": 1000000,
                     "temperature": 0.7,
@@ -54,6 +59,30 @@ class Config:
             self.config["api_keys"] = {}
         
         self.config["api_keys"][provider] = key
+        self._save_config()
+        
+    def get_provider(self):
+        """Get the current provider."""
+        return self.config.get("provider", "google")
+    
+    def set_provider(self, provider):
+        """Set the provider ('google' or 'vertex')."""
+        if provider not in ["google", "vertex"]:
+            raise ValueError("Provider must be 'google' or 'vertex'")
+        self.config["provider"] = provider
+        self._save_config()
+        
+    def get_vertex_config(self):
+        """Get Vertex AI configuration."""
+        return self.config.get("vertex", {})
+    
+    def set_vertex_config(self, project_id, location="us-central1"):
+        """Set Vertex AI configuration."""
+        if "vertex" not in self.config:
+            self.config["vertex"] = {}
+        
+        self.config["vertex"]["project_id"] = project_id
+        self.config["vertex"]["location"] = location
         self._save_config()
     
     def get_default_model(self):

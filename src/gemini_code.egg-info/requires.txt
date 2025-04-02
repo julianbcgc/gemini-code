@@ -4,3 +4,6 @@ rich>=13.0
 PyYAML>=6.0
 tiktoken>=0.6.0
 questionary>=2.0.0
+
+[vertex]
+google-cloud-aiplatform>=1.36.0

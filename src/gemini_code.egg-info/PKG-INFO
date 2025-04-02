@@ -21,6 +21,8 @@ Requires-Dist: rich>=13.0
 Requires-Dist: PyYAML>=6.0
 Requires-Dist: tiktoken>=0.6.0
 Requires-Dist: questionary>=2.0.0
+Provides-Extra: vertex
+Requires-Dist: google-cloud-aiplatform>=1.36.0; extra == "vertex"
 
 # Gemini Code
 
@@ -62,12 +64,34 @@ pip install -e .
 
 ## Setup
 
-Before using Gemini CLI, you need to set up your API keys:
+Before using Gemini CLI, you need to set up your API credentials. You can use either Google AI API or Vertex AI:
+
+### Google AI API (Default)
 
 ```bash
 # Set up Google API key for Gemini models
 gemini setup YOUR_GOOGLE_API_KEY
 ```
+
+### Vertex AI
+
+First, install the Vertex AI dependencies:
+
+```bash
+# Install Vertex AI dependencies
+pip install gemini-code[vertex]
+```
+
+Then set up Vertex AI credentials:
+
+```bash
+# Set up Vertex AI project
+gemini setup-vertex YOUR_PROJECT_ID [LOCATION]
+
+# Default location is us-central1 if not specified
+```
+
+You'll need to have the appropriate Google Cloud credentials configured on your system to use Vertex AI.
 
 ## Usage
 
@@ -78,11 +102,20 @@ gemini
 # Start a session with a specific model
 gemini --model models/gemini-2.5-pro-exp-03-25
 
+# Start a session with Vertex AI provider
+gemini --provider vertex
+
+# Start a session with a specific Vertex AI model
+gemini --provider vertex --model gemini-2.5-pro
+
 # Set default model
 gemini set-default-model models/gemini-2.5-pro-exp-03-25
 
-# List all available models
+# List all available models (for the current provider)
 gemini list-models
+
+# List available Vertex AI models
+gemini list-models --provider vertex
 ```
 
 ## Interactive Commands
