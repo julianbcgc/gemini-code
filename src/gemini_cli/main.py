@@ -7,6 +7,7 @@ Passes console object to model.
 import os
 import sys
 import click
+import json
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -290,17 +291,24 @@ def start_interactive_session(model_name: str, console: Console):
     provider = config.get_provider()
     console.print(f"\nUsing provider: [bold]{provider}[/bold]")
     
-    # Check for GEMINI.md context file
-    context_file = Path('GEMINI.md')
+    # Check for context files (GEMINI.md, CLAUDE.md, AIDER.md)
+    context_files = ['GEMINI.md', 'CLAUDE.md', 'AIDER.md']
     context_content = None
-    if context_file.exists():
-        try:
-            with open(context_file, 'r', encoding='utf-8') as f:
-                context_content = f.read()
-            console.print(f"[dim]Loaded context from {context_file} ({len(context_content) // 1000}KB)[/dim]")
-        except Exception as e:
-            log.error(f"Error loading context file: {e}")
-            console.print(f"[yellow]Error loading context file: {e}[/yellow]")
+    
+    for file_name in context_files:
+        context_file = Path(file_name)
+        if context_file.exists():
+            try:
+                with open(context_file, 'r', encoding='utf-8') as f:
+                    file_content = f.read()
+                if context_content:
+                    context_content += f"\n\n# CONTENT FROM {file_name.upper()}\n\n{file_content}"
+                else:
+                    context_content = file_content
+                console.print(f"[dim]Loaded context from {context_file} ({len(file_content) // 1000}KB)[/dim]")
+            except Exception as e:
+                log.error(f"Error loading context file {file_name}: {e}")
+                console.print(f"[yellow]Error loading context file {file_name}: {e}[/yellow]")
     
     model = None
     
@@ -376,15 +384,146 @@ def start_interactive_session(model_name: str, console: Console):
 
     # --- Session Start Message ---
     console.print("Type '/help' for commands, '/exit' or Ctrl+C to quit.")
+    
+    # Setup context usage statistics
+    context_stats = {
+        "total_tokens": 0, 
+        "max_tokens": 1048576,  # Gemini 2.5 Pro context window size
+        "usage_percentage": 0
+    }
+    
+    def update_context_stats():
+        """Update and display the context usage statistics."""
+        if not model:
+            return
+            
+        # Estimate tokens in the chat history
+        if hasattr(model, 'chat_history'):
+            token_count = 0
+            for turn in model.chat_history:
+                # Convert parts to string for token counting
+                parts_text = ""
+                for part in turn.get('parts', []):
+                    if hasattr(part, 'text'):
+                        parts_text += part.text
+                    elif hasattr(part, 'function_call') and part.function_call:
+                        # Rough approximation for function calls
+                        parts_text += json.dumps(str(part.function_call))
+                    elif hasattr(part, 'function_response') and part.function_response:
+                        # Rough approximation for function responses
+                        parts_text += json.dumps(str(part.function_response))
+                    else:
+                        # For string parts
+                        if isinstance(part, str):
+                            parts_text += part
+                        else:
+                            parts_text += str(part)
+                
+                token_count += count_tokens(parts_text)
+        
+            context_stats["total_tokens"] = token_count
+            context_stats["usage_percentage"] = round((token_count / context_stats["max_tokens"]) * 100, 1)
+            
+            # Display the context usage statistics
+            usage_color = "green"
+            if context_stats["usage_percentage"] >= 75:
+                usage_color = "yellow"
+            if context_stats["usage_percentage"] >= 90:
+                usage_color = "red"
+                
+            console.print(f"[dim]Context usage: [{usage_color}]{context_stats['total_tokens']:,}[/{usage_color}] / {context_stats['max_tokens']:,} tokens ({context_stats['usage_percentage']}%)[/dim]")
+
+    def compact_context():
+        """Compacts the context by generating a summary and saving it to GEMINI.md"""
+        if not model:
+            return False
+            
+        console.print("[bold yellow]Compacting context...[/bold yellow]")
+        
+        try:
+            # Create a prompt to summarize the context
+            summary_prompt = """I need you to summarize all our conversation and context into a comprehensive GEMINI.md file.
+This file will become the new context for our ongoing conversation.
+
+Format it like this:
+# GEMINI.md
+
+This file provides guidance when working with code in this repository.
+
+## PROJECT SUMMARY
+[Summarize the key details about the project, its purpose, and structure]
+
+## KEY FILES AND COMPONENTS
+[List and describe the most important files, classes, and functions]
+
+## IMPORTANT CONSIDERATIONS
+[Note any dependencies, configuration needs, and constraints]
+
+## CURRENT TASK STATUS
+[Summarize what we've been working on and what needs to be done next]
+
+Make the summary detailed enough to continue our work but keep it concise.
+Focus only on the MOST important information to continue our conversation effectively.
+"""
+            # Get the summary from the model
+            with console.status("[yellow]Generating context summary...", spinner="dots"):
+                summary_response = model.generate(summary_prompt)
+                
+            if not summary_response:
+                console.print("[bold red]Failed to generate context summary.[/bold red]")
+                return False
+                
+            # Write the summary to GEMINI.md
+            with open('GEMINI.md', 'w', encoding='utf-8') as f:
+                f.write(summary_response)
+                
+            # Reload the model with the new context
+            if provider == "google":
+                api_key = config.get_api_key("google")
+                model = GeminiModel(api_key=api_key, console=console, model_name=model_name, context_content=summary_response)
+            elif provider == "vertex":
+                vertex_config = config.get_vertex_config()
+                vertex_model_name = model_name.replace("models/", "")
+                model = VertexAIModel(
+                    api_key="",  # Not used for Vertex
+                    console=console,
+                    project_id=vertex_config.get("project_id"),
+                    location=vertex_config.get("location", "us-central1"),
+                    model_name=vertex_model_name,
+                    context_content=summary_response
+                )
+                
+            # Reset the context stats
+            context_stats["total_tokens"] = count_tokens(summary_response)
+            context_stats["usage_percentage"] = round((context_stats["total_tokens"] / context_stats["max_tokens"]) * 100, 1)
+            
+            console.print(f"[green]Context compacted successfully. New usage: {context_stats['usage_percentage']}%[/green]")
+            return True
+            
+        except Exception as e:
+            console.print(f"[bold red]Error compacting context: {e}[/bold red]")
+            return False
 
     while True:
         try:
+            # Update and display context stats
+            update_context_stats()
+            
+            # Check if we need to compact the context
+            if context_stats["usage_percentage"] >= 90:
+                compact_result = compact_context()
+                if not compact_result:
+                    console.print("[yellow]Warning: Context is near capacity but compaction failed.[/yellow]")
+            
             # Use standard input instead of rich console.input to avoid EOFError issues
             console.print("[bold blue]You:[/bold blue] ", end="")
             user_input = input()
 
             if user_input.lower() == '/exit': break
             elif user_input.lower() == '/help': show_help(); continue
+            elif user_input.lower() == '/compact': 
+                compact_context()
+                continue
             elif user_input.lower() == '/init':
                 # Generate context file interactively
                 try:
@@ -396,34 +535,47 @@ def start_interactive_session(model_name: str, console: Console):
                     )
                     console.print(f"[green]✓[/green] Context file generated: [bold]{output_file}[/bold]")
                     
-                    # Reload context
-                    if Path(output_file).exists():
-                        try:
-                            with open(output_file, 'r', encoding='utf-8') as f:
-                                context_content = f.read()
-                            console.print(f"[green]Context loaded: {len(context_content) // 1000}KB[/green]")
-                            
-                            # Re-initialize model with context if possible
-                            if provider == "google":
-                                api_key = config.get_api_key("google")
-                                model = GeminiModel(api_key=api_key, console=console, model_name=model_name, context_content=context_content)
-                                console.print("[green]Model reinitialized with new context.[/green]")
-                            elif provider == "vertex":
-                                vertex_config = config.get_vertex_config()
-                                vertex_model_name = model_name.replace("models/", "")
-                                model = VertexAIModel(
-                                    api_key="",  # Not used for Vertex
-                                    console=console,
-                                    project_id=vertex_config.get("project_id"),
-                                    location=vertex_config.get("location", "us-central1"),
-                                    model_name=vertex_model_name,
-                                    context_content=context_content
-                                )
-                                console.print("[green]Model reinitialized with new context.[/green]")
-                        except Exception as e:
-                            console.print(f"[yellow]Error loading new context: {e}[/yellow]")
+                    # Reload context from all available context files
+                    context_files = ['GEMINI.md', 'CLAUDE.md', 'AIDER.md']
+                    context_content = None
+                    
+                    for file_name in context_files:
+                        file_path = Path(file_name)
+                        if file_path.exists():
+                            try:
+                                with open(file_path, 'r', encoding='utf-8') as f:
+                                    file_content = f.read()
+                                if context_content:
+                                    context_content += f"\n\n# CONTENT FROM {file_name.upper()}\n\n{file_content}"
+                                else:
+                                    context_content = file_content
+                                console.print(f"[green]Loaded context from {file_name}: {len(file_content) // 1000}KB[/green]")
+                            except Exception as e:
+                                console.print(f"[yellow]Error loading context file {file_name}: {e}[/yellow]")
+                    
+                    if context_content:
+                        # Re-initialize model with context if possible
+                        if provider == "google":
+                            api_key = config.get_api_key("google")
+                            model = GeminiModel(api_key=api_key, console=console, model_name=model_name, context_content=context_content)
+                            console.print("[green]Model reinitialized with new context.[/green]")
+                        elif provider == "vertex":
+                            vertex_config = config.get_vertex_config()
+                            vertex_model_name = model_name.replace("models/", "")
+                            model = VertexAIModel(
+                                api_key="",  # Not used for Vertex
+                                console=console,
+                                project_id=vertex_config.get("project_id"),
+                                location=vertex_config.get("location", "us-central1"),
+                                model_name=vertex_model_name,
+                                context_content=context_content
+                            )
+                            console.print("[green]Model reinitialized with new context.[/green]")
                 except Exception as e:
-                    console.print(f"[bold red]Error generating context:[/bold red] {e}")
+                    if "context" in str(e).lower():
+                        console.print(f"[yellow]Error loading new context: {e}[/yellow]")
+                    else:
+                        console.print(f"[bold red]Error generating context: {e}[/bold red]")
                 continue
 
             # Display initial "thinking" status - generate handles intermediate ones
@@ -474,6 +626,7 @@ def show_help():
   /exit - Exit the application
   /help - Show this help message
   /init - Generate or regenerate project context file
+  /compact - Manually trigger context compaction
 
  [cyan]CLI Commands:[/cyan]
   gemini setup KEY [--provider google/vertex]
